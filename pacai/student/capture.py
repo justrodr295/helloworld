@@ -103,20 +103,26 @@ class OffensiveAgent(GreedyFeatureAgent):
             features["enemyDistance"] = 20
             features["enemyTooClose"] = 0
 
-        # 4. Carry-and-return: the more food we're carrying, the more
-        #    we want to head home so we don't lose it all to a ghost.
-        current_food = successor.food_count(agent_index=my_index)
-        carrying = self._start_food - current_food
+        # 4. Carry-and-return: only matters when we're on the enemy side.
+        #    Pull us toward home when we've eaten enough food this trip.
+        if successor.is_pacman(my_index):
+            current_food = successor.food_count(agent_index=my_index)
+            carrying = self._start_food - current_food
 
-        home_distances = [
-            self._distances.get_distance(my_pos, bp)
-            for bp in self._border_positions
-        ]
-        home_distances = [d for d in home_distances if d is not None]
-        nearest_home = min(home_distances) if home_distances else 0
+            home_distances = [
+                self._distances.get_distance(my_pos, bp)
+                for bp in self._border_positions
+            ]
+            home_distances = [d for d in home_distances if d is not None]
+            nearest_home = min(home_distances) if home_distances else 0
 
-        # Multiplied together so carrying 0 = no pull toward home.
-        features["carryHome"] = carrying * nearest_home
+            # Only start pulling home after eating a few pellets.
+            if carrying >= 3:
+                features["carryHome"] = nearest_home
+            else:
+                features["carryHome"] = 0
+        else:
+            features["carryHome"] = 0
 
         # Avoid stopping and reversing.
         features["stopped"] = 1 if action == pacai.core.action.STOP else 0
