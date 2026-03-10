@@ -148,12 +148,14 @@ class DefensiveAgent(GreedyFeatureAgent):
 
         self.weights = {
             "onDefense": 100,
-            "invaderDistance": -60,
+            "invaderDistance": -100,
             "stopped": -100,
             "reverse": -2,
             "numInvaders": -1000,
             # Prefer to defend food that invaders are close to.
-            "invaderFoodDistance": -10,
+            "invaderFoodDistance": -5,
+            "urgentDefense": 200,
+            "score": 50,
         }
 
     def game_start(self, initial_state):
@@ -192,6 +194,10 @@ class DefensiveAgent(GreedyFeatureAgent):
         
         # 4. How close are invaders to our remaining food?
         if invader_positions:
+            # Make defense more urgent when invaders are nearby.
+            closest = min(distances)
+            features["urgentDefense"] = 1 / (closest + 1)
+            
             invader_indices = list(invader_positions.keys())
             first_invader_index = invader_indices[0]
             our_food_positions = successor.get_food(agent_index=first_invader_index)
@@ -212,6 +218,7 @@ class DefensiveAgent(GreedyFeatureAgent):
                 features["invaderFoodDistance"] = 0
         else:
             features["invaderFoodDistance"] = 0
+            features["urgentDefense"] = 0
 
         # Avoid stopping and reversing.
         agent_actions = state.get_agent_actions(my_index)
