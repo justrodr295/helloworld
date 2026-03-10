@@ -1,6 +1,7 @@
 import pacai.core.action
 import pacai.core.agentinfo
 from pacai.agents.greedy import GreedyFeatureAgent
+from pacai.core.board import Position
 from pacai.search.distance import DistancePreComputer
 
 
@@ -26,12 +27,30 @@ class OffensiveAgent(GreedyFeatureAgent):
             "enemyTooClose": -250,
             "stopped": -100,
             "reverse": -2,
+            "carryHome": -15,
         }
 
     def game_start(self, initial_state):
         super().game_start(initial_state)
         # Precompute distances for the entire board.
         self._distances.compute(initial_state.board)
+
+        # Remember how much food the enemy started with.
+        self._start_food = initial_state.food_count(agent_index=self.agent_index)
+
+        # Find walkable border positions on our side so we know where "home" is.
+        board = initial_state.board
+        mid = board.width // 2
+        my_pos = initial_state.get_agent_position(self.agent_index)
+        if my_pos.col < mid:
+            border_col = mid - 1
+        else:
+            border_col = mid
+
+        self._border_positions = [
+            Position(row, border_col) for row in range(board.height)
+            if not board.is_wall(Position(row, border_col))
+        ]
 
     def compute_features(self, state, action):
         features = {}
@@ -84,6 +103,21 @@ class OffensiveAgent(GreedyFeatureAgent):
             features["enemyDistance"] = 20
             features["enemyTooClose"] = 0
 
+        # 4. Carry-and-return: the more food we're carrying, the more
+        #    we want to head home so we don't lose it all to a ghost.
+        current_food = successor.food_count(agent_index=my_index)
+        carrying = self._start_food - current_food
+
+        home_distances = [
+            self._distances.get_distance(my_pos, bp)
+            for bp in self._border_positions
+        ]
+        home_distances = [d for d in home_distances if d is not None]
+        nearest_home = min(home_distances) if home_distances else 0
+
+        # Multiplied together so carrying 0 = no pull toward home.
+        features["carryHome"] = carrying * nearest_home
+
         # Avoid stopping and reversing.
         features["stopped"] = 1 if action == pacai.core.action.STOP else 0
 
@@ -95,8 +129,6 @@ class OffensiveAgent(GreedyFeatureAgent):
             features["reverse"] = 1 if action == reverse_action else 0
         else:
             features["reverse"] = 0
-        
-        features["score"] = state.get_normalized_score(my_index)
 
         return features
 
