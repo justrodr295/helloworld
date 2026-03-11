@@ -26,7 +26,7 @@ class OffensiveAgent(GreedyFeatureAgent):
             "enemyDistance": 20,
             "enemyTooClose": -250,
             "stopped": -100,
-            "reverse": -2,
+            "reverse": -8,
             "carryHome": -15,
         }
 
@@ -77,7 +77,7 @@ class OffensiveAgent(GreedyFeatureAgent):
         else:
             features["distanceToFood"] = 0
 
-        # 3. Distance to opponents (non-scared) if we are on offense.
+        # 3. Distance to non-scared opponents.
         opponents = successor.get_nonscared_opponent_positions(agent_index=my_index)
         opponent_positions = [
             pos
@@ -92,19 +92,24 @@ class OffensiveAgent(GreedyFeatureAgent):
         ]
         enemy_distances = [d for d in enemy_distances if d is not None]
 
+        # Check if enemy ghosts are scared (we ate a power capsule).
+        scared_opponents = successor.get_scared_opponent_positions(
+            agent_index=my_index
+        )
+        enemies_all_scared = (
+            len(scared_opponents) > 0 and len(opponent_positions) == 0
+        )
+
         if enemy_distances:
             min_enemy_distance = min(enemy_distances)
-            # Larger distance is better.
             features["enemyDistance"] = min_enemy_distance
-            # Punish for being too close.
             features["enemyTooClose"] = 1 if min_enemy_distance <= 3 else 0
         else:
-            # No visible enemies.
+            min_enemy_distance = None
             features["enemyDistance"] = 20
             features["enemyTooClose"] = 0
 
-        # 4. Carry-and-return: only matters when we're on the enemy side.
-        #    Pull us toward home when we've eaten enough food this trip.
+        # 4. Carry-and-return: pull toward home when carrying food on enemy side.
         if successor.is_pacman(my_index):
             current_food = successor.food_count(agent_index=my_index)
             carrying = self._start_food - current_food
@@ -116,8 +121,10 @@ class OffensiveAgent(GreedyFeatureAgent):
             home_distances = [d for d in home_distances if d is not None]
             nearest_home = min(home_distances) if home_distances else 0
 
-            # Only start pulling home after eating a few pellets.
-            if carrying >= 3:
+            if enemies_all_scared:
+                # Ghosts are scared, keep eating safely.
+                features["carryHome"] = 0
+            elif carrying >= 3:
                 features["carryHome"] = nearest_home
             else:
                 features["carryHome"] = 0
@@ -150,18 +157,33 @@ class DefensiveAgent(GreedyFeatureAgent):
             "onDefense": 100,
             "invaderDistance": -100,
             "stopped": -100,
-            "reverse": -2,
+            "reverse": -8,
             "numInvaders": -1000,
-            # Prefer to defend food that invaders are close to.
             "invaderFoodDistance": -5,
             "urgentDefense": 200,
             "score": 50,
+            "scaredFlee": -150,
+            "patrolDistance": -8,
         }
 
     def game_start(self, initial_state):
         super().game_start(initial_state)
         # Precompute distances for the entire board.
         self._distances.compute(initial_state.board)
+
+        # Find walkable border positions so we can patrol when idle.
+        board = initial_state.board
+        mid = board.width // 2
+        my_pos = initial_state.get_agent_position(self.agent_index)
+        if my_pos.col < mid:
+            border_col = mid - 1
+        else:
+            border_col = mid
+
+        self._border_positions = [
+            Position(row, border_col) for row in range(board.height)
+            if not board.is_wall(Position(row, border_col))
+        ]
 
     def compute_features(self, state, action):
         features = {}
@@ -182,45 +204,75 @@ class DefensiveAgent(GreedyFeatureAgent):
         features["numInvaders"] = len(invader_positions)
 
         # 3. Distance to nearest invader.
+        scared = successor.is_scared(my_index)
+
         if invader_positions:
             distances = [
                 self._distances.get_distance(my_pos, inv_pos)
                 for inv_pos in invader_positions.values()
             ]
             distances = [d for d in distances if d is not None]
-            features["invaderDistance"] = min(distances) if distances else 0
+            closest = min(distances) if distances else 0
+
+            if scared:
+                # When scared, don't chase invaders
+                features["invaderDistance"] = 0
+                features["urgentDefense"] = 0
+                features["invaderFoodDistance"] = 0
+                # Flee if an invader is within 4 tiles.
+                if closest <= 4:
+                    features["scaredFlee"] = max(0, 5 - closest)
+                else:
+                    features["scaredFlee"] = 0
+            else:
+                features["invaderDistance"] = closest
+                features["scaredFlee"] = 0
+
+                # Make defense more urgent when invaders are nearby.
+                features["urgentDefense"] = 1 / (closest + 1)
+
+                invader_indices = list(invader_positions.keys())
+                first_invader_index = invader_indices[0]
+                our_food_positions = successor.get_food(
+                    agent_index=first_invader_index
+                )
+
+                if our_food_positions:
+                    distances_to_food = []
+                    for inv_pos in invader_positions.values():
+                        for food_pos in our_food_positions:
+                            d = self._distances.get_distance(inv_pos, food_pos)
+                            if d is not None:
+                                distances_to_food.append(d)
+
+                    features["invaderFoodDistance"] = (
+                        min(distances_to_food) if distances_to_food else 0
+                    )
+                else:
+                    features["invaderFoodDistance"] = 0
         else:
             features["invaderDistance"] = 0
-        
-        # 4. How close are invaders to our remaining food?
-        if invader_positions:
-            # Make defense more urgent when invaders are nearby.
-            closest = min(distances)
-            features["urgentDefense"] = 1 / (closest + 1)
-            
-            invader_indices = list(invader_positions.keys())
-            first_invader_index = invader_indices[0]
-            our_food_positions = successor.get_food(agent_index=first_invader_index)
-
-            if our_food_positions:
-                distances_to_food = []
-                for inv_pos in invader_positions.values():
-                    for food_pos in our_food_positions:
-                        d = self._distances.get_distance(inv_pos, food_pos)
-                        if d is not None:
-                            distances_to_food.append(d)
-
-                distances_to_food = [d for d in distances_to_food if d is not None]
-                features["invaderFoodDistance"] = (
-                    min(distances_to_food) if distances_to_food else 0
-                )
-            else:
-                features["invaderFoodDistance"] = 0
-        else:
             features["invaderFoodDistance"] = 0
             features["urgentDefense"] = 0
+            features["scaredFlee"] = 0
+
+            # 4. Patrol: when no invaders are visible, drift toward the border
+            #    so we're ready to intercept.
+            if self._border_positions:
+                home_distances = [
+                    self._distances.get_distance(my_pos, bp)
+                    for bp in self._border_positions
+                ]
+                home_distances = [d for d in home_distances if d is not None]
+                features["patrolDistance"] = (
+                    min(home_distances) if home_distances else 0
+                )
+            else:
+                features["patrolDistance"] = 0
 
         # Avoid stopping and reversing.
+        features["stopped"] = 1 if action == pacai.core.action.STOP else 0
+
         agent_actions = state.get_agent_actions(my_index)
 
         if len(agent_actions) > 1:
